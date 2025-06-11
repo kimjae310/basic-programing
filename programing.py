@@ -1,62 +1,10 @@
-import yfinance as yf
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
 import streamlit as st
-import datetime
+import json
+import pandas as pd
 
-# -----------------------------
-# 1. 데이터 로딩 함수
-# -----------------------------
-def load_data(ticker='AAPL', period='6mo'):
-    df = yf.download(ticker, period=period)
-    df = df[['Close']].dropna()
-    return df
-
-# -----------------------------
-# 2. 전처리 함수 (LSTM 학습용)
-# -----------------------------
-def prepare_data(df, lookback=60):
-    scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(df)
-    X, y = [], []
-    for i in range(lookback, len(scaled)):
-        X.append(scaled[i - lookback:i, 0])
-        y.append(scaled[i, 0])
-    return np.array(X), np.array(y), scaler
-
-# -----------------------------
-# 3. LSTM 모델 훈련
-# -----------------------------
-def train_lstm(X, y):
-    X = X.reshape((X.shape[0], X.shape[1], 1))
-    model = Sequential()
-    model.add(LSTM(50, return_sequences=False, input_shape=(X.shape[1], 1)))
-    model.add(Dense(1))
-    model.compile(optimizer='adam', loss='mse')
-    model.fit(X, y, epochs=5, batch_size=32, verbose=0)
-    return model
-
-# -----------------------------
-# 4. 예측 함수
-# -----------------------------
-def predict_price(model, X_last, scaler):
-    pred_scaled = model.predict(X_last.reshape(1, -1, 1))
-    pred = scaler.inverse_transform(pred_scaled)
-    return float(pred[0][0])
-
-# -----------------------------
-# 5. 모의투자 기록 관리
-# -----------------------------
+# 포트폴리오 초기화
 def init_portfolio():
-    return {
-        'cash': 1000000,
-        'positions': {},
-        'history': []
-    }
+    return {'cash': 1000000, 'positions': {}, 'history': []}
 
 def buy_stock(portfolio, ticker, price, qty):
     cost = price * qty
@@ -70,67 +18,51 @@ def buy_stock(portfolio, ticker, price, qty):
             pos['avg_price'] = avg_price
         else:
             portfolio['positions'][ticker] = {'qty': qty, 'avg_price': price}
-        portfolio['history'].append({
-            'date': str(datetime.date.today()),
-            'ticker': ticker,
-            'price': price,
-            'qty': qty,
-            'type': 'BUY'
-        })
+        portfolio['history'].append({'ticker': ticker, 'price': price, 'qty': qty, 'type': 'BUY'})
         return True
     return False
 
-# -----------------------------
-# Streamlit UI
-# -----------------------------
-st.set_page_config(page_title="📈 LSTM 모의투자 시스템")
-st.title("📊 LSTM 기반 종목 예측 & 모의투자")
+# Streamlit 시작
+st.title(\"📊 예측 결과 기반 모의투자 시스템\")
 
-stocks = ['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'NVDA']
-selected = st.selectbox("종목 선택", stocks)
-
-# 포트폴리오 세션 관리
+# 포트폴리오 세션 상태
 if 'portfolio' not in st.session_state:
     st.session_state['portfolio'] = init_portfolio()
 portfolio = st.session_state['portfolio']
 
-# 데이터 로딩 및 모델 학습
-df = load_data(selected)
-X, y, scaler = prepare_data(df)
-model = train_lstm(X, y)
-X_last = X[-1]
-pred_price = predict_price(model, X_last, scaler)
-last_price = df['Close'].iloc[-1]
-diff = pred_price - last_price
-trend = "📈 매수 추천" if diff > 0 else "📉 보류"
+# 예측 결과 로딩
+try:
+    with open('prediction_result.json', 'r') as f:
+        predictions = json.load(f)
+    pred = predictions[0]
+    ticker = pred['ticker']
+    last_price = pred['last_price']
+    pred_price = pred['predicted_price']
+    diff = pred_price - last_price
+    trend = \"📈 매수 추천\" if diff > 0 else \"📉 보류\"
 
-st.subheader(f"🔎 예측 결과: {selected}")
-st.metric("현재가", f"${last_price:.2f}")
-st.metric("예측 종가", f"${pred_price:.2f}", delta=f"{diff:.2f}")
-st.write(f"추천 의견: {trend}")
+    st.subheader(f\"🔍 {ticker} 예측 결과\")    
+    st.metric(\"현재가\", f\"${last_price:.2f}\")
+    st.metric(\"예측 종가\", f\"${pred_price:.2f}\", delta=f\"{diff:.2f}\")
+    st.write(f\"추천 의견: {trend}\")
 
-# 차트
-st.line_chart(df['Close'])
+    st.subheader(\"💰 모의투자\")    
+    qty = st.number_input(\"매수 수량\", min_value=1, step=1)
+    if st.button(\"매수 실행\"):
+        if buy_stock(portfolio, ticker, last_price, qty):
+            st.success(f\"{ticker} {qty}주 매수 완료!\")
+        else:
+            st.error(\"잔액 부족!\")
 
-# 모의 투자 기능
-st.subheader("💰 모의투자")
-buy_qty = st.number_input("매수 수량", min_value=1, step=1)
-if st.button("매수 실행"):
-    success = buy_stock(portfolio, selected, last_price, buy_qty)
-    if success:
-        st.success(f"✅ {selected} 주식 {buy_qty}주 매수 완료!")
+    st.subheader(\"📦 보유 종목\")
+    if portfolio['positions']:
+        df_pos = pd.DataFrame.from_dict(portfolio['positions'], orient='index')
+        df_pos['현재가'] = last_price
+        df_pos['평가금액'] = df_pos['현재가'] * df_pos['qty']
+        df_pos['수익률'] = ((df_pos['현재가'] - df_pos['avg_price']) / df_pos['avg_price']) * 100
+        st.dataframe(df_pos.round(2))
     else:
-        st.error("❌ 잔액 부족! 매수 실패")
+        st.info(\"현재 보유 종목 없음.\")
 
-# 포트폴리오 보기
-st.subheader("📦 보유 종목")
-if portfolio['positions']:
-    df_pos = pd.DataFrame.from_dict(portfolio['positions'], orient='index')
-    df_pos['현재가'] = last_price
-    df_pos['평가금액'] = df_pos['현재가'] * df_pos['qty']
-    df_pos['수익률'] = ((df_pos['현재가'] - df_pos['avg_price']) / df_pos['avg_price']) * 100
-    st.dataframe(df_pos.round(2))
-else:
-    st.info("현재 보유 중인 종목이 없습니다.")
-
-st.caption("💡 예측 기반 투자 결과는 실제 투자 결과와 다를 수 있습니다.")
+except FileNotFoundError:
+    st.error(\"❌ 예측 결과 파일(prediction_result.json)이 없습니다. Colab이나 학습 스크립트를 먼저 실행해 주세요.\")
