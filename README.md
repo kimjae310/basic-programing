@@ -56,3 +56,6 @@
 ### 📦 필수 라이브러리 설치
 ```bash
 pip install numpy pandas matplotlib scikit-learn keras FinanceDataReader
+
+python 파일이름.py
+ex) python part3.py
